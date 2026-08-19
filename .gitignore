@@ -1,0 +1,35 @@
+# NIBSS ETL — .gitignore
+
+# Sample / personal data
+[0-9][0-9]_[0-9][0-9]_[0-9][0-9][0-9][0-9]/
+
+# Virtual environment
+venv/
+.venv/
+
+# Excel output (never commit generated workbooks)
+nibss_etl/output/
+output/
+
+# Email credentials (never commit)
+.env
+
+# Run logs (may contain email addresses)
+logs/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Agent / dev-only docs (not for consumers)
+AGENTS.md
+PLAN.md
+UNIVERSAL_RULES.md
