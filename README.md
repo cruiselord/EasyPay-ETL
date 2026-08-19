@@ -18,9 +18,11 @@ automatic email delivery. No FTP, no database, no cloud service required.
 - [Getting your data](#getting-your-data)
 - [Running it](#running-it)
 - [Automating it daily (macOS)](#automating-it-daily-macos)
+- [Testing without NIBSS access](#testing-without-nibss-access)
 - [The output workbook](#the-output-workbook)
 - [Project structure](#project-structure)
 - [Troubleshooting](#troubleshooting)
+- [Notes & limitations](#notes--limitations)
 
 ---
 
@@ -29,15 +31,17 @@ automatic email delivery. No FTP, no database, no cloud service required.
 NIBSS (Nigeria Inter-Bank Settlement System) publishes EasyPay and Direct Debit
 reports four times a day as **pipe-delimited (`|`) CSV files**. This tool:
 
-1. **Reads** every CSV from a day's session folders
-2. **Cleans & standardises** the columns (fixes NIBSS typos, maps bank codes)
+1. **Downloads** the files itself from the NIBSS Thin Client web API — no FTP,
+   no manual download — or reads them from a local folder
+2. **Reads & cleans** every CSV: standardises column names, fixes NIBSS typos,
+   maps bank short-codes to full names
 3. **Deduplicates** — a successful payment appears in both reports, so the
    Direct Debit copy is removed to avoid double-counting
-4. **Builds** a styled 5-sheet Excel workbook (see [The output workbook](#the-output-workbook))
+4. **Builds** a styled 5-sheet Excel workbook (see
+   [The output workbook](#the-output-workbook))
 5. **Emails** the workbook to your team and an executive summary to your MD
-
-Optionally, it can also **download the files itself** from the NIBSS Thin Client
-web API (no manual download, no FTP) and **run on a daily schedule**.
+6. **Schedules** itself to run every morning (macOS `launchd`), with guards so
+   it only runs when online and never duplicates a day's report
 
 ---
 
@@ -78,7 +82,7 @@ download (from NIBSS) and the outgoing email (via SMTP).
 
 ```bash
 # 1. Get the code
-git clone https://github.com/<your-org>/EasyPay-ETL.git
+git clone https://github.com/cruiselord/EasyPay-ETL.git
 cd EasyPay-ETL
 
 # 2. Create a virtual environment and install dependencies
@@ -117,6 +121,20 @@ cp .env.example .env
 | `MD_EMAIL` | optional | Executive-summary recipient (leave empty to skip the MD email) |
 | `NIBSS_RUN_AFTER` | optional | Earliest time the scheduler may run (default `07:00`) |
 
+### Emails
+
+On a successful run the pipeline sends up to **two emails** via Outlook SMTP
+(`smtp.office365.com:587`):
+
+| Email | Recipient | Content |
+|---|---|---|
+| Reconciliation report | `TEAM_EMAIL` | The generated `.xlsx` workbook attached |
+| Executive summary | `MD_EMAIL` (optional) | HTML summary: total txns, approved, failed, success rate, total/approved/failed value |
+
+If `MD_EMAIL` is empty, only the team email is sent. If any of `EMAIL_USER`,
+`EMAIL_PASSWORD`, `TEAM_EMAIL` is missing (or SMTP fails), emails are skipped
+with a warning and the workbook is still written.
+
 > **Microsoft app password:** create one at <https://mysignins.microsoft.com/security-info>
 > (requires MFA). Your tenant admin must enable SMTP AUTH (Exchange admin →
 > Mail flow → SMTP AUTH).
@@ -129,10 +147,10 @@ You don't need FTP. The NIBSS Thin Client portal is a front-end over a JSON web
 API, and `fetcher.py` talks to it directly.
 
 ```bash
-# Fetch today's files (or pass a specific date)
 python nibss_etl/fetcher.py                    # today
 python nibss_etl/fetcher.py 18_08_2026         # a specific day
 python nibss_etl/fetcher.py --list             # browse the remote file tree
+python nibss_etl/fetcher.py --list --depth 3   # limit tree depth
 ```
 
 Files land in `<DD_MM_YYYY>/…` at the project root, in the exact session-based
@@ -155,7 +173,8 @@ structure the pipeline expects:
       debit_successful.csv
 ```
 
-Re-running skips files already downloaded (matched by size).
+The fetcher retries transient errors automatically and skips files already
+downloaded (matched by size), so re-runs are safe and fast.
 
 **Prefer to download manually?** Log in at the NIBSS Thin Client, export the
 EasyPay / Direct Debit reports for the day, and place the resulting
@@ -175,13 +194,20 @@ EasyPay / Direct Debit reports for the day, and place the resulting
 ```
 
 `run.sh` does two things: runs `fetcher.py` (download) then `main.py`
-(workbook + email). To skip the download step, run `main.py` directly:
+(workbook + email).
+
+To skip the download step, run `main.py` directly:
 
 ```bash
 cd nibss_etl && source venv/bin/activate
-python main.py            # most recent date folder
-python main.py 18_08_2026 # specific date
+python main.py            # auto-detect the most recent DD_MM_YYYY folder
+python main.py 18_08_2026 # process a specific date
 ```
+
+| Argument | Description |
+|---|---|
+| `(none)` | Auto-detect the most recent `DD_MM_YYYY` folder at the project root |
+| `DD_MM_YYYY` | Process a specific date folder, e.g. `python main.py 29_07_2026` |
 
 ---
 
@@ -223,15 +249,85 @@ rm ~/Library/LaunchAgents/local.nibss-etl.plist
 
 ---
 
+## Testing without NIBSS access
+
+You can verify the whole pipeline works with dummy data — no NIBSS account
+needed:
+
+```bash
+# Create a test date folder with one session
+mkdir -p test_01_01_2026/20260101000000/Easy\ Pay
+mkdir -p test_01_01_2026/20260101000000/Direct\ Debit
+
+# Create a minimal pipe-delimited CSV
+cat > "test_01_01_2026/20260101000000/Easy Pay/credit_successful.csv" << 'EOF'
+transaction_id|amount|narration|status|beneficiary_bvn|channel_code|nip_response_code|destination_institution_code|session
+TXN001|5000.00|Test payment|00|OPY|2|00|000014|0000
+EOF
+
+# Run it (emails are skipped unless .env is configured)
+python nibss_etl/main.py test_01_01_2026
+```
+
+The pipeline handles missing files gracefully — every gap is logged in the
+`Run_Log` sheet and whatever is available gets processed.
+
+---
+
 ## The output workbook
 
-| Sheet | Contents |
+Five sheets, written to `nibss_etl/output/NIBSS_Reconciliation_<DD_MM_YYYY>.xlsx`.
+
+### 1. Summary (dashboard)
+
+- **KPI cards** — Total Txns, Successful, Failed, Success Rate, Total Value,
+  At-Risk (failed) Value, Value Success Rate, Avg Value, and number of distinct
+  beneficiary banks.
+- **Session overview** — per-session counts and value splits (successful vs
+  failed) with labelled sessions: 5:59 AM, 11:59 AM, 5:59 PM, 11:59 PM.
+- **Top banks** — by volume, with a pie chart.
+- **Failure analysis** — failed transactions grouped by NIP response code
+  (e.g. `00` success, `91` routing error, `96` system malfunction,
+  `97` timeout).
+- **Purpose patterns** — transaction categories derived from the narration.
+- **Channel breakdown** — by channel code, with descriptions.
+
+### 2 & 3. EasyPay / DirectDebit
+
+Filterable Excel tables (AutoFilter) with columns reordered to a priority order:
+
+`session → transaction_type → status → amount → transaction_id →
+payment_reference → narration → response_status → message → nip_response_code
+→ …` (remaining columns alphabetical).
+
+- Failed rows are highlighted red.
+- The `amount` column is currency-formatted (₦).
+- Header row + columns A–C are frozen (`D2`).
+
+### 4. Exceptions
+
+Every failed row from both sources combined, with an added `source` column
+(`EasyPay` / `DirectDebit`), sorted by amount descending, red-highlighted.
+
+### 5. Run_Log
+
+Pipeline metadata: generation timestamp, source folder, per-sheet row counts,
+and a per-file manifest (session, source, file, found/missing, row count, size,
+modified time, detail). Schema-drift warnings and dropped columns are logged
+here too.
+
+### Column handling
+
+The reader applies these transformations automatically:
+
+| Rule | Effect |
 |---|---|
-| **Summary** | Dashboard: KPI cards, session overview (successful vs failed), top banks by volume, failure analysis by NIP code, channel breakdown, transaction patterns. |
-| **EasyPay** | Every EasyPay row in a filterable Excel table (failed rows highlighted red). |
-| **DirectDebit** | Same structure as EasyPay, with duplicate successful payments removed. |
-| **Exceptions** | Every failed row from both sources, sorted by amount descending, with a `source` column. |
-| **Run_Log** | Pipeline metadata: per-file manifest (found/missing, size, row count), dropped columns, schema warnings. |
+| Original `status` column | renamed to `response_status` |
+| Filename (`_failed` / `_successful`) | becomes the canonical `status` column |
+| `debit_*` columns | renamed to `originator_*` for a shared schema |
+| `initiatior_*` typo | corrected to `initiator_*` |
+| Literal `"null"` cells | replaced with empty |
+| 100 %-null columns | dropped and logged |
 
 ---
 
@@ -249,7 +345,7 @@ rm ~/Library/LaunchAgents/local.nibss-etl.plist
     ├── main.py               # CLI entry point (date detection, orchestration)
     └── etl/
         ├── reader.py         # folder walking, CSV parsing, column standardisation
-        ├── writer.py         # workbook builder (5 sheets, styling)
+        ├── writer.py         # workbook builder (5 sheets, styling, charts)
         └── mailer.py         # team + MD emails via SMTP
 ```
 
@@ -262,6 +358,7 @@ rm ~/Library/LaunchAgents/local.nibss-etl.plist
 | `NIBSS_USER / NIBSS_PASSWORD not set` | `cp .env.example .env` and fill in your credentials. |
 | `Emails skipped — missing env vars` | Ensure `EMAIL_USER`, `EMAIL_PASSWORD`, `TEAM_EMAIL` are set in `.env`. |
 | `Login failed` from the fetcher | Check your NIBSS username/password; the account must be enabled for the Thin Client. |
+| `TOTP/OTP step not supported` | Your NIBSS account requires 2FA — the fetcher can't automate that yet. |
 | `Failed to save request context` during fetch | Transient NIBSS-side error — the fetcher retries automatically; just re-run. |
 | Report has 0 rows | The day's files may be header-only (no transactions), or you ran before NIBSS published the day's sessions. |
 | launchd job logs `Operation not permitted` | Grant Full Disk Access to `/bin/bash` (see [Automating it daily](#automating-it-daily-macos)). |
@@ -276,5 +373,8 @@ rm ~/Library/LaunchAgents/local.nibss-etl.plist
 - **Name-enquiry files** are excluded from the totals (they are beneficiary
   lookups, not transactions).
 - **Bank names** are mapped from NIBSS short codes via a dictionary in
-  `writer.py`; unknown codes display as-is.
+  `writer.py` (`BANK_NAME_MAP`); unknown codes display as-is.
+- **Session naming** — the pipeline expects NIBSS's `YYYYMMDDHHMMSS` session
+  folders and the standard 4 sessions per day.
 - **No database** — everything is file-based and runs locally.
+- **No license** — internal tool; add one if you make the repo public.
