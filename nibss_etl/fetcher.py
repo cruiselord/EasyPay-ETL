@@ -51,7 +51,7 @@ def _build_opener() -> urllib.request.OpenerDirector:
 
 
 def _post(opener: urllib.request.OpenerDirector, method: str, payload: dict,
-          retries: int = 6) -> dict:
+          retries: int = 8) -> dict:
     """POST JSON to an ASMX method, retrying transient network/server errors."""
     last: Exception | None = None
     for attempt in range(retries):
@@ -69,7 +69,9 @@ def _post(opener: urllib.request.OpenerDirector, method: str, payload: dict,
             last = exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             last = exc
-        time.sleep(1.0 * (attempt + 1))
+        delay = min(2 ** attempt, 30)
+        print(f"  ! {method}: {last} — retry {attempt + 1}/{retries} in {delay}s")
+        time.sleep(delay)
     raise RuntimeError(f"{method}: request failed after {retries} attempts: {last}")
 
 

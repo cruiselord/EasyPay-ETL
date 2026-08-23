@@ -93,7 +93,8 @@ def main():
 
     build_workbook(data, run_log, root_path, output_path)
     _print_summary(output_path, data, run_log)
-    send_emails(data, output_path, date_folder)
+    if send_emails(data, output_path, date_folder) is False:
+        sys.exit(2)
 
 
 if __name__ == "__main__":

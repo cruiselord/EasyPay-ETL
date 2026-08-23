@@ -106,22 +106,23 @@ def _build_message(subject: str, recipients: list[str], html_body: str,
     return msg
 
 
-def send_emails(data: dict, output_path: str, date_folder: str) -> bool:
+def send_emails(data: dict, output_path: str, date_folder: str) -> bool | None:
     """
     Send the team (workbook) and MD (summary) emails.
 
-    Returns ``True`` when both were sent, ``False`` when env vars were
-    missing or SMTP failed (failure is printed, never raised).
+    Returns ``True`` when both were sent, ``False`` when SMTP failed
+    (retryable), ``None`` when skipped (missing env vars / no data).
+    Failures are printed, never raised.
     """
     missing = [name for name in REQUIRED_ENV if not os.environ.get(name)]
     if missing:
         print(f"Emails skipped — missing env vars: {', '.join(missing)}")
-        return False
+        return None
 
     summary = _executive_summary(data)
     if not summary:
         print("Emails skipped — no data to summarise.")
-        return False
+        return None
 
     date_label = datetime.strptime(date_folder, "%d_%m_%Y").strftime("%d %B %Y")
     timestamp = datetime.now().strftime("%d %B %Y, %H:%M")

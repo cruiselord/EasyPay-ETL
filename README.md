@@ -41,7 +41,8 @@ reports four times a day as **pipe-delimited (`|`) CSV files**. This tool:
    [The output workbook](#the-output-workbook))
 5. **Emails** the workbook to your team and an executive summary to your MD
 6. **Schedules** itself to run every morning (macOS `launchd`), with guards so
-   it only runs when online and never duplicates a day's report
+   it only runs when the Mac is awake and in use (lid open, display on), is
+   online, and never duplicates a day's report
 
 ---
 
@@ -221,7 +222,9 @@ human, every morning.
 NIBSS_RUN_AFTER=06:00 ./install_launchd.sh   # custom time
 ```
 
-This installs a LaunchAgent (`local.nibss-etl`) that fires `auto_run.sh`:
+This installs a LaunchAgent (labelled `com.yourorg.nibss-etl` — `yourorg` is a
+placeholder for your organisation's reverse-DNS short-name) that fires
+`auto_run.sh`:
 
 - **daily at your chosen time** (`StartCalendarInterval`)
 - **on login/wake** (`RunAtLoad`)
@@ -229,11 +232,49 @@ This installs a LaunchAgent (`local.nibss-etl`) that fires `auto_run.sh`:
   duplicate runs)
 
 `auto_run.sh` reconciles **yesterday's** data (the last NIBSS session closes at
-23:59, so a full day is only complete after midnight). It only runs when:
+23:59, so a full day is only complete after midnight). It only runs when **all**
+of the following are true:
 
 1. the clock is at/after the run time,
-2. NIBSS is reachable (the Mac has internet), and
-3. yesterday's report hasn't already been produced.
+2. the Mac is in an **active session** — the lid is **open** and the **display
+   is awake** (see [Why we require an active session](#why-we-require-an-active-session)),
+3. NIBSS is reachable (the Mac has internet), and
+4. yesterday's report hasn't already been produced.
+
+Every trigger is written to `logs/auto_run.log` — including each skip and the
+reason — so you can always see exactly why a run did or didn't happen.
+
+### Why we require an active session
+
+Originally the agent fired purely on the clock (`StartCalendarInterval` at
+07:00). That's fine on a laptop while you're sitting at it — but with the lid
+closed, macOS puts the machine into **clamshell sleep**, and `launchd` only gets
+brief **DarkWake** slices (a few seconds of CPU every ~15 minutes). One morning
+the job fired during a DarkWake:
+
+- the Python process was frozen mid-download for ~40 minutes, waking only in
+  2–9 second bursts;
+- with Wi-Fi half-up during each sleep transition, the fetcher's requests to
+  NIBSS failed with `HTTP Error 500` and it eventually gave up;
+- the same run completed instantly when re-run with the lid open.
+
+The schedule itself was never the problem — it was the job *trying to run while
+the machine was asleep*. To fix it, `auto_run.sh` now checks for a genuine login
+before doing any work:
+
+- **lid open** — `ioreg` reports `AppleClamshellState = No`
+- **display awake** — `powerd` holds the `Prevent sleep while display is on`
+  assertion (`pmset -g assertions`)
+
+If either check fails, the run is skipped and logged (`skipping — lid closed` /
+`skipping — display asleep`). The 15-minute catch-up keeps retrying cheaply
+until you actually log in, then the report runs once for the previous day.
+
+This keeps the whole pipeline **local** — no cloud scheduler, no remote server,
+no external dependency beyond the NIBSS fetch and the SMTP email. The trade-off
+is deliberate: the report is produced a little later (whenever you first open
+the Mac after 07:00) in exchange for never running unattended on a sleeping
+machine.
 
 > **macOS privacy note:** launchd cannot read `~/Documents` by default. If the
 > project lives under `~/Documents`, grant **Full Disk Access** to `/bin/bash`
@@ -243,8 +284,8 @@ This installs a LaunchAgent (`local.nibss-etl`) that fires `auto_run.sh`:
 To remove the schedule:
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/local.nibss-etl.plist
-rm ~/Library/LaunchAgents/local.nibss-etl.plist
+launchctl unload ~/Library/LaunchAgents/com.yourorg.nibss-etl.plist
+rm ~/Library/LaunchAgents/com.yourorg.nibss-etl.plist
 ```
 
 ---
@@ -336,7 +377,7 @@ The reader applies these transformations automatically:
 ```
 .
 ├── run.sh                    # fetch + process (one command)
-├── auto_run.sh               # scheduler guard (time + internet + once-per-day)
+├── auto_run.sh               # scheduler guard (time + active-session + internet + once-per-day)
 ├── install_launchd.sh        # install the macOS daily schedule
 ├── requirements.txt          # pip dependencies
 ├── .env.example              # copy to .env and fill in
@@ -362,6 +403,7 @@ The reader applies these transformations automatically:
 | `Failed to save request context` during fetch | Transient NIBSS-side error — the fetcher retries automatically; just re-run. |
 | Report has 0 rows | The day's files may be header-only (no transactions), or you ran before NIBSS published the day's sessions. |
 | launchd job logs `Operation not permitted` | Grant Full Disk Access to `/bin/bash` (see [Automating it daily](#automating-it-daily-macos)). |
+| launchd job logs `skipping — lid closed` / `skipping — display asleep` | Expected — the job waits for an active session. Open the lid and log in; it runs within 15 minutes (see [Why we require an active session](#why-we-require-an-active-session)). |
 | `ModuleNotFoundError: pandas` | Activate the venv or `pip install -r requirements.txt`. |
 
 ---

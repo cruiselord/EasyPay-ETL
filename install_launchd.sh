@@ -16,7 +16,10 @@
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-LABEL="local.nibss-etl"
+# Reverse-DNS label for the LaunchAgent.  Replace `yourorg` with your own
+# organisation short-name — this is the identifier that shows up under
+# ~/Library/LaunchAgents/ and in `launchctl list`.  Override with NIBSS_LABEL.
+LABEL="${NIBSS_LABEL:-com.yourorg.nibss-etl}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 RUN_AFTER="${NIBSS_RUN_AFTER:-07:00}"
 HOUR="${RUN_AFTER%%:*}"
@@ -47,3 +50,15 @@ launchctl unload "$PLIST" 2>/dev/null || true
 launchctl load -w "$PLIST"
 echo "Installed '$LABEL' — runs daily at $RUN_AFTER (and on login/wake)."
 echo "To remove: launchctl unload $PLIST && rm $PLIST"
+
+# Verify launchd can actually read the project (catches the missing
+# Full-Disk-Access case, where /bin/bash is denied ~/Documents).
+launchctl kickstart -k "gui/$UID/$LABEL" 2>/dev/null || true
+sleep 2
+if grep -q "triggered" "$DIR/logs/auto_run.log" 2>/dev/null; then
+    echo "OK: launchd successfully executed the job."
+else
+    echo "WARNING: no 'triggered' entry in logs/auto_run.log."
+    echo "  Grant Full Disk Access to /bin/bash, then rerun this script:"
+    echo "  System Settings → Privacy & Security → Full Disk Access → add /bin/bash"
+fi
