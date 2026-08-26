@@ -4,7 +4,7 @@
 # Creates and loads a LaunchAgent that fires auto_run.sh:
 #   - daily at NIBSS_RUN_AFTER (default 07:00)
 #   - on login/wake (RunAtLoad)
-#   - every 15 min as a catch-up (idempotent — a marker in logs/ prevents re-runs)
+#   - every 2 min as a catch-up (idempotent — a marker in logs/ prevents re-runs)
 #
 # Usage:
 #   ./install_launchd.sh                # default 07:00
@@ -39,7 +39,7 @@ cat > "$PLIST" <<EOF
     <key>RunAtLoad</key><true/>
     <key>StartCalendarInterval</key>
     <dict><key>Hour</key><integer>$HOUR</integer><key>Minute</key><integer>$MIN</integer></dict>
-    <key>StartInterval</key><integer>900</integer>
+    <key>StartInterval</key><integer>120</integer>
     <key>StandardOutPath</key><string>$DIR/logs/auto_run.log</string>
     <key>StandardErrorPath</key><string>$DIR/logs/auto_run.log</string>
 </dict>
